@@ -1,0 +1,55 @@
+import type { Snapshot } from "../lib/types";
+export const fixture = (): Snapshot => ({
+  brief: {
+    name: "Synthetic test",
+    objective: "Test evidence rules",
+    product: "Training collection",
+    targetAudience: "",
+    platforms: [],
+    contentFormats: [],
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    budget: 10000,
+    currency: "USD",
+    requirements: [
+      {
+        id: "r1",
+        kind: "content",
+        label: "Fitness content",
+        value: "fitness",
+        importance: "preferred",
+      },
+      {
+        id: "r2",
+        kind: "budget",
+        label: "Within budget",
+        value: "",
+        importance: "must_have",
+      },
+      {
+        id: "r3",
+        kind: "availability",
+        label: "Available",
+        value: "available",
+        importance: "must_have",
+      },
+    ],
+  },
+  athletes: [
+    {
+      id: "athlete-a",
+      name: "Synthetic Athlete A",
+      initials: "AA",
+      number: "00",
+      position: "Guard",
+      team: "Test team",
+      bio: "Synthetic fixture",
+      rosterDate: "2026-10-29",
+      sourceUrl: "https://example.org",
+      color: "sage",
+    },
+  ],
+  evidence: [],
+  asOf: "2026-10-29T12:00:00Z",
+  engine: "rules-v1",
+});

@@ -1,0 +1,5 @@
+# Optional AI provider settings. Copy to .dev.vars locally and supply your own values.
+# Configure hosted secrets through Sites, never in hosting.json.
+AI_ENABLED=false
+AI_MODEL=
+ANTHROPIC_API_KEY=
