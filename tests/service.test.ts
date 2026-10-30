@@ -56,6 +56,57 @@ function database(): D1Database {
     },
   } as unknown as D1Database;
 }
+test("live research queues without spending and enforces atomic per-account limits", async () => {
+  const a = new Studio(database(), "live-user", {
+    apiKey: "not-a-real-key",
+    model: "test",
+  });
+  await a.initialize();
+  const c = await a.createCampaign(fixture().brief);
+  const key = crypto.randomUUID();
+  const first = await a.createRun(c.id, { key, mode: "ai" });
+  assert.equal(first.state, "queued");
+  assert.match(first.snapshot.engine, /live-v2/);
+  assert.equal((await a.createRun(c.id, { key, mode: "ai" })).id, first.id);
+  for (let i = 0; i < 4; i++)
+    await a.createRun(c.id, { key: crypto.randomUUID(), mode: "ai" });
+  await assert.rejects(
+    () => a.createRun(c.id, { key: crypto.randomUUID(), mode: "ai" }),
+    { status: 429 },
+  );
+  assert.equal((await a.state()).runs.length, 5);
+});
+test("live research persistence is fenced by the owning lease and keeps source evidence", async () => {
+  const a = new Studio(database(), "live-user", {
+    apiKey: "not-a-real-key",
+    model: "test",
+  });
+  await a.initialize();
+  const c = await a.createCampaign(fixture().brief);
+  const r = await a.createRun(c.id, { key: crypto.randomUUID(), mode: "ai" });
+  const snapshot = {
+    ...r.snapshot,
+    asOf: "2026-11-01T12:00:00.000Z",
+    research: {
+      refreshedAt: "2026-11-01T12:00:00.000Z",
+      sources: [],
+      warnings: [],
+    },
+  };
+  await a.persistLiveResearch(r.id, "stale-lease", snapshot);
+  assert.equal((await a.getRun(r.id)).snapshot.research, undefined);
+  await a
+    .statement(
+      "UPDATE research_runs SET lease='valid',state='running' WHERE id=?",
+      r.id,
+    )
+    .run();
+  await a.persistLiveResearch(r.id, "valid", snapshot);
+  const stored = await a.getRun(r.id);
+  assert.equal(stored.snapshot.research?.refreshedAt, snapshot.asOf);
+  assert.equal(stored.state, "queued");
+  assert.equal(stored.changedEvidence.length, 0);
+});
 test("workspace isolation applies to reads, writes, decisions, evidence and exports", async () => {
   const db = database(),
     alice = new Studio(db, "alice"),

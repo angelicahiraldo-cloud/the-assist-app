@@ -320,7 +320,10 @@ export default function StudioApp() {
   useEffect(() => {
     if (!run || !["queued", "running"].includes(run.state)) return;
     let stopped = false;
+    let inFlight = false;
     const timer = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const updated = await api(`runs/${enc(run.id)}/process`, "POST");
         if (!stopped) setRun(updated);
@@ -329,6 +332,8 @@ export default function StudioApp() {
           setError(
             e instanceof Error ? e.message : "Research could not resume.",
           );
+      } finally {
+        inFlight = false;
       }
     }, 4000);
     return () => {
@@ -344,6 +349,7 @@ export default function StudioApp() {
         const d = await api("state");
         if (active) {
           setData(d);
+          setResearchMode(d.aiAvailable ? "ai" : "rules");
           const params = new URLSearchParams(location.search);
           if (params.get("run")) {
             try {
@@ -399,17 +405,21 @@ export default function StudioApp() {
       setView("research");
       history.replaceState(null, "", `/?run=${enc(id)}`);
     });
-  const generate = async (c: Campaign) =>
+  const generate = async (c: Campaign, mode = researchMode) =>
     execute(async () => {
       const r = await api(`campaigns/${enc(c.id)}/runs`, "POST", {
         key: crypto.randomUUID(),
-        mode: researchMode,
+        mode,
       });
       setRun(r);
       setView("research");
       history.replaceState(null, "", `/?run=${enc(r.id)}`);
       await refresh();
-      notify("Research prepared. Review the evidence before deciding.");
+      notify(
+        r.state === "queued"
+          ? "Research submitted. Refreshing public Mystics sources…"
+          : "Research prepared. Review the evidence before deciding.",
+      );
     });
   const saveBrief = async (brief: Brief) => {
     const result = form?.campaign
@@ -421,6 +431,18 @@ export default function StudioApp() {
     setForm(null);
     await refresh();
     navigate("campaigns");
+    if (data?.aiAvailable) {
+      await generate(
+        {
+          ...brief,
+          id: result.id,
+          version: result.version,
+          createdAt: new Date().toISOString(),
+        },
+        "ai",
+      );
+      return;
+    }
     notify(
       `Campaign ${result.version > 1 ? "revised" : "created"}. Ready when you are.`,
     );
@@ -1514,7 +1536,9 @@ function CampaignForm({
           vocabulary, such as “fitness” or “Instagram”. Platform, format,
           audience, budget, and date checks are added automatically from your
           brief. Narrative objectives remain context for your review in
-          rule-based mode.
+          rule-based mode. When AI is enabled, saving this brief submits it for
+          fresh public-source research and a cited Mystics shortlist. Campaign
+          details are sent to Anthropic; API usage limits apply.
         </p>
         <div className="requirement-list">
           {b.requirements.map((r, i) => (
@@ -1683,9 +1707,11 @@ function ResearchPage({
   const brief = run.snapshot.brief,
     kept = run.decisions.filter((d) => d.decision === "keep"),
     athlete = (id: string) => run.snapshot.athletes.find((a) => a.id === id)!;
-  const visible = run.result.filter(
-    (a) => filter === "all" || a.classification === filter,
-  );
+  const visible = run.result
+    .filter((a) => filter === "all" || a.classification === filter)
+    .sort(
+      (a, b) => (a.recommendation?.rank ?? 99) - (b.recommendation?.rank ?? 99),
+    );
   const compare = run.result.filter((a) => selected.includes(a.athleteId));
   function outcomeCell(a: Assessment, req: Requirement) {
     const o = a.requirements.find((r) => r.requirementId === req.id);
@@ -1810,6 +1836,58 @@ function ResearchPage({
           </select>
         )}
       </div>
+      {["queued", "running"].includes(run.state) && (
+        <div className="notice" role="status">
+          <LoaderCircle className="spin" size={20} />
+          <div>
+            <strong>
+              {run.snapshot.research
+                ? "Matching the campaign to verified sources…"
+                : "Refreshing the Mystics roster and public athlete sources…"}
+            </strong>
+            <p>
+              This can take a few minutes. Keep this research page open;
+              reopening it resumes interrupted work.
+            </p>
+          </div>
+        </div>
+      )}
+      {run.snapshot.research && (
+        <div className="notice">
+          <div>
+            <strong>
+              Public sources refreshed{" "}
+              {new Date(run.snapshot.research.refreshedAt).toLocaleString()}
+            </strong>
+            <p>
+              {run.snapshot.research.sources.length} official pages collected.
+              Source text is verified; campaign-fit reasons are AI
+              interpretations requiring your review. Fees, availability,
+              audience and conflicts are not confirmed.
+            </p>
+            {run.snapshot.research.warnings.length > 0 && (
+              <details>
+                <summary>
+                  Research coverage notes (
+                  {run.snapshot.research.warnings.length})
+                </summary>
+                {run.snapshot.research.warnings.map((w, i) => (
+                  <p key={i}>{w}</p>
+                ))}
+              </details>
+            )}
+          </div>
+        </div>
+      )}
+      {run.snapshot.research &&
+        ["awaiting_review", "completed"].includes(run.state) &&
+        !run.result.some((a) => a.recommendation) && (
+          <div className="notice warning">
+            The retrieved evidence did not support a verified, differentiated
+            shortlist for this campaign. No recommendations were invented.
+            Review the coverage notes or refine the brief.
+          </div>
+        )}
       {run.state === "failed" && (
         <Empty
           title="Research needs another look"
@@ -1825,9 +1903,9 @@ function ResearchPage({
       {tab === "shortlist" && (
         <>
           <p className="small-muted">
-            Alphabetical, not ranked. A potential fit means there is a
-            documented connection—not that all campaign conditions are
-            confirmed.
+            {run.snapshot.engine.endsWith(":live-v2")
+              ? "AI-recommended athletes appear first, ordered by documented campaign relevance—not guaranteed performance. Remaining athletes are shown for comparison. Unknown requirements remain unconfirmed."
+              : "Alphabetical, not ranked. A potential fit means there is a documented connection—not that all campaign conditions are confirmed."}
           </p>
           <div className="research-list">
             {visible.map((a) => {
@@ -1866,6 +1944,32 @@ function ResearchPage({
                       Compare
                     </label>
                   </div>
+                  {a.recommendation && (
+                    <div className="brief-summary" style={{ display: "block" }}>
+                      <span className="eyebrow">
+                        AI RECOMMENDATION #{a.recommendation.rank} · REVIEW
+                        REQUIRED
+                      </span>
+                      <p>{a.recommendation.rationale}</p>
+                      <p className="small-muted">{a.recommendation.caveats}</p>
+                      {a.recommendation.evidenceIds.map((id) => {
+                        const e = run.snapshot.evidence.find(
+                          (e) => e.id === id,
+                        );
+                        return e ? (
+                          <button
+                            key={id}
+                            className="source-link"
+                            onClick={() => source(e)}
+                          >
+                            <BookOpen size={13} />
+                            {e.sourceTitle}
+                            <ArrowUpRight size={12} />
+                          </button>
+                        ) : null;
+                      })}
+                    </div>
+                  )}
                   <div className="requirements-overview">
                     {a.requirements.map((o) => (
                       <span key={o.requirementId}>
@@ -1981,12 +2085,13 @@ function ResearchPage({
               );
             })}
           </div>
-          {!visible.length && run.state !== "failed" && (
-            <Empty title="No athletes in this group">
-              Choose another disposition or add approved research to the
-              library.
-            </Empty>
-          )}
+          {!visible.length &&
+            !["failed", "queued", "running"].includes(run.state) && (
+              <Empty title="No athletes in this group">
+                Choose another disposition or add approved research to the
+                library.
+              </Empty>
+            )}
           {run.state === "awaiting_review" && (
             <div className="review-footer">
               <div>
@@ -2929,17 +3034,17 @@ function Guide() {
           {
             n: "01",
             title: "Define the campaign",
-            text: "Create a brief with your goal, product, audience, dates, and budget. Add explicit comparison requirements and mark each as essential or preferred. Free-text objectives provide context; they are not silently interpreted by AI.",
+            text: "Create a brief with your goal, product, audience, dates, and budget. When AI is enabled, saving submits the brief for a live source refresh and campaign-specific recommendations. Campaign information is sent to Anthropic for this analysis.",
           },
           {
             n: "02",
             title: "Build the evidence",
-            text: "The library begins with 12 official Mystics roster entries captured October 29, 2026. Add approved content, activities, and partnership sources to develop useful campaign connections. Use the same evidence values in campaign requirements and source records.",
+            text: "AI research verifies the current Mystics roster and retrieves accessible official WNBA and Mystics profiles and news on each submission. Only exact, athlete-attributed excerpts can support recommendations. Inaccessible pages are skipped and coverage notes are shown.",
           },
           {
             n: "03",
             title: "Understand the results",
-            text: "Supported means a documented fact matches a requirement. Not met means a verified conflict. Unknown means more evidence or confirmation is needed. The current engine matches approved evidence using explicit rules; it is not an AI-generated opinion.",
+            text: "AI recommendations are ordered by interpreted campaign relevance and include source citations. They do not mean every requirement is confirmed. Supported, not met and unknown are separate evidence checks; fees, audience and availability are never guessed.",
           },
           {
             n: "04",
@@ -2974,8 +3079,8 @@ function Guide() {
             persistent database storage. AI-assisted research appears as an
             option only after a provider key, model, and enable flag are
             configured on the server. Multi-member organization invitations are
-            not enabled in this owner-private release. No fees, audience
-            characteristics, availability, or sponsorship clearance are
+            not enabled; each signed-in account has separate records. No fees,
+            audience characteristics, availability, or sponsorship clearance are
             invented. The Assist does not contact athletes or negotiate
             agreements.
           </p>

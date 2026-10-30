@@ -68,6 +68,12 @@ export type Outcome = {
 };
 export type Assessment = {
   athleteId: string;
+  recommendation?: {
+    rank: number;
+    rationale: string;
+    evidenceIds: string[];
+    caveats: string;
+  };
   classification:
     "potential_fit" | "insufficient_evidence" | "documented_mismatch";
   requirements: Outcome[];
@@ -78,6 +84,11 @@ export type Snapshot = {
   evidence: Evidence[];
   asOf: string;
   engine: string;
+  research?: {
+    refreshedAt: string;
+    sources: { id: string; url: string; title: string; text: string }[];
+    warnings: string[];
+  };
 };
 export type Campaign = Brief & {
   id: string;

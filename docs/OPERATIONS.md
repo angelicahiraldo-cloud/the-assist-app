@@ -2,7 +2,7 @@
 
 ## Supported release boundary
 
-This is an owner-private application with persistent data and a complete manual/evidence-assisted workflow. The AI provider integration is implemented but needs a key, supported model, and live evaluation before enabling. Shared organization membership, an always-on worker, billing, automated outreach, and campaign execution are not part of this deployment.
+This is a publicly shareable application with private per-account data. Live Mystics research and Anthropic recommendations are enabled through server-side secrets. Shared organization membership, an always-on worker, billing, automated outreach, and campaign execution are not part of this deployment.
 
 ## Automated verification
 
@@ -31,15 +31,17 @@ For a failed AI request, leave the evidence catalog and campaign intact. Select 
 ## AI activation checklist
 
 1. Select an authorized Anthropic account/model and configure server-side secrets.
-2. Confirm what campaign information may be sent to that provider. Only the objective, product, subjective requirements, athlete identifiers, and approved excerpts are included.
+2. Confirm what campaign information may be sent to the provider. The owner authorized full campaign briefs and public athlete information; the app discloses this before submission. Search discovery receives only objective, product, topical requirements and player names. Recommendation generation receives the full brief and retrieved official source text.
 3. Test a small sourced dataset and inspect each output against its citations. The syntactic checks do not prove semantic accuracy.
 4. Confirm timeouts and provider errors result in failed runs, and that evidence matching remains available.
-5. Set a provider-side spend cap before allowing repeated live requests. The app limits creation to approximately 30 runs per account per hour; concurrent requests can race that preflight limit, so it is not a billing guarantee.
+5. Set a provider-side spend cap. AI run creation is atomically limited to five per owner/hour, 100 site-wide/day and ten recently active runs. Each stage has a four-minute lease; provider retries are disabled. Interrupted stages may be recovered up to three times and can incur charges again. These limits are not a billing guarantee or a defense against users creating many accounts.
 6. Run the source PRD's manual-versus-assisted pilot before making accuracy or time-savings claims.
 
 ## Privacy, backup, and future sharing
 
-The initial Site is private to its owner. Retain this boundary unless sharing is explicitly requested and membership/role controls are implemented. User IDs scope storage; email is only displayed. Do not log full prompts, private briefs, or secrets. The API logs only server errors with a request identifier, not deliberate payload dumps.
+The owner explicitly enabled public link access. Preserve that audience on deployment, using ordinary save/deploy rather than owner-private publication. User IDs scope storage; email is only displayed. Never log prompts, private briefs or secrets. Anthropic errors from research are sanitized before storage or display. Do not put the local `API Key.md` in Git or artifacts; hosted credentials belong in the secret store.
+
+Fresh research intentionally starts from public sources instead of user-entered athlete claims. Source failures appear in coverage notes. If the current roster cannot be verified, the run fails instead of using a stale roster. If news search is unavailable but official profiles load, the run may continue with an explicit limited-coverage warning. Exact quotes are machine-checked and stored as source evidence; “approved” here means passed mechanical source verification, not human review. Human review of interpretation and athlete attribution is still mandatory.
 
 Use the hosting provider's supported D1 backup/export facilities before significant migrations. Verify a restore in a separate environment before relying on a backup policy. Automatic backup scheduling, a demonstrated production restore, a retention policy, and an account-deletion workflow have not been established by this build; decide them before onboarding external customers. Existing summary and evaluation downloads are not full database backups.
 

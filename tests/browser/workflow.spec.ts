@@ -180,6 +180,7 @@ test("add athlete, curate evidence, approve, and request a correction", async ({
   await expect(
     page
       .locator(".correction")
+      .filter({ hasText: name })
       .filter({ hasText: "Check this synthetic source again." }),
   ).toBeVisible();
 });

@@ -9,6 +9,11 @@ import {
   normalizeBrief,
 } from "./schemas";
 import { assessWithAI, type AIConfig } from "./ai";
+import {
+  refreshPublicResearch,
+  recommendFromPublicResearch,
+  ResearchError,
+} from "./live-research";
 import { z } from "zod";
 
 export class AppError extends Error {
@@ -149,7 +154,9 @@ export class Studio {
       })),
       corrections: co,
       audit: au,
-      engine: "Evidence matching · rule-based",
+      engine: this.ai
+        ? "Live Mystics research · AI recommendations"
+        : "Evidence matching · rule-based",
       aiAvailable: Boolean(this.ai),
       workspace: "My research studio",
     };
@@ -241,7 +248,7 @@ export class Studio {
           409,
           "This request key belongs to another brief version.",
         );
-      await this.process(old.id);
+      if (mode !== "ai") await this.process(old.id);
       return this.getRun(old.id);
     }
     const count = await this.statement(
@@ -267,7 +274,7 @@ export class Studio {
       evidence: es.map((e) => ({ ...JSON.parse(e.payload), status: e.status })),
       asOf: now(),
       engine:
-        mode === "ai" ? `anthropic:${this.ai!.model}:prompt-v1` : "rules-v1",
+        mode === "ai" ? `anthropic:${this.ai!.model}:live-v2` : "rules-v1",
     };
     const input = json(snapshot),
       hash = Array.from(
@@ -283,7 +290,7 @@ export class Studio {
     const rid = id();
     await this.db.batch([
       this.statement(
-        "INSERT OR IGNORE INTO research_runs (id,owner,campaign_id,version,idempotency_key,input_hash,snapshot,state,attempts,created_at) VALUES (?,?,?,?,?,?,?,'queued',0,?)",
+        `INSERT OR IGNORE INTO research_runs (id,owner,campaign_id,version,idempotency_key,input_hash,snapshot,state,attempts,created_at) SELECT ?,?,?,?,?,?,?,'queued',0,? WHERE ?='rules' OR ((SELECT count(*) FROM research_runs WHERE owner=? AND created_at>? AND snapshot LIKE '%anthropic:%')<5 AND (SELECT count(*) FROM research_runs WHERE created_at>? AND snapshot LIKE '%anthropic:%')<100 AND (SELECT count(*) FROM research_runs WHERE state IN ('queued','running') AND created_at>? AND snapshot LIKE '%anthropic:%')<10)`,
         rid,
         this.owner,
         cid,
@@ -292,6 +299,11 @@ export class Studio {
         hash,
         input,
         now(),
+        mode,
+        this.owner,
+        new Date(Date.now() - 3600000).toISOString(),
+        new Date(Date.now() - 86400000).toISOString(),
+        new Date(Date.now() - 600000).toISOString(),
       ),
       this.event("Research requested", cid),
     ]);
@@ -300,7 +312,12 @@ export class Studio {
       this.owner,
       key,
     ).first<{ id: string }>();
-    await this.process(actual!.id);
+    if (!actual)
+      throw new AppError(
+        429,
+        "Live research limit reached (5 per account/hour, 100 site-wide/day, or 10 active runs). Please try later. Your brief is saved.",
+      );
+    if (mode !== "ai") await this.process(actual.id);
     return this.getRun(actual!.id);
   }
   async process(rid: string) {
@@ -309,7 +326,7 @@ export class Studio {
       claimed = await this.statement(
         "UPDATE research_runs SET state='running',lease=?,lease_until=?,attempts=attempts+1,error=NULL WHERE id=? AND owner=? AND attempts<3 AND (state='queued' OR (state='running' AND lease_until<?)) RETURNING *",
         token,
-        Date.now() + 60000,
+        Date.now() + 240000,
         rid,
         this.owner,
         Date.now(),
@@ -327,6 +344,34 @@ export class Studio {
       const snapshot = JSON.parse(claimed.snapshot) as Snapshot;
       if (snapshot.engine.startsWith("anthropic:") && !this.ai)
         throw new Error("AI unavailable");
+      if (snapshot.engine.endsWith(":live-v2")) {
+        if (!snapshot.research) {
+          const fresh = await refreshPublicResearch(
+            snapshot,
+            this.owner,
+            this.ai!,
+          );
+          await this.persistLiveResearch(rid, token, fresh);
+        } else {
+          const assessed = await recommendFromPublicResearch(
+            snapshot,
+            this.ai!,
+          );
+          // Keep citation metadata, not full scraped articles, after evidence extraction.
+          assessed.snapshot.research!.sources =
+            assessed.snapshot.research!.sources.map((s) => ({
+              ...s,
+              text: "",
+            }));
+          await this.persistLiveResearch(
+            rid,
+            token,
+            assessed.snapshot,
+            assessed.result,
+          );
+        }
+        return;
+      }
       const result = validateAssessments(
         snapshot.engine.startsWith("anthropic:")
           ? await assessWithAI(snapshot, this.ai!)
@@ -340,14 +385,72 @@ export class Studio {
         this.owner,
         token,
       ).run();
-    } catch {
+    } catch (error) {
       await this.statement(
-        "UPDATE research_runs SET state='failed',error='Research validation failed. Review the evidence and retry.',lease=NULL,lease_until=NULL WHERE id=? AND owner=? AND lease=?",
+        "UPDATE research_runs SET state='failed',error=?,lease=NULL,lease_until=NULL WHERE id=? AND owner=? AND lease=?",
+        error instanceof ResearchError
+          ? error.message
+          : "Live research could not complete. The provider or a source may be unavailable. No unsupported recommendations were substituted; please retry later.",
         rid,
         this.owner,
         token,
       ).run();
     }
+  }
+  async persistLiveResearch(
+    rid: string,
+    token: string,
+    snapshot: Snapshot,
+    result?: Run["result"],
+  ) {
+    const hash = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(json(snapshot)),
+        ),
+      ),
+    )
+      .map((n) => n.toString(16).padStart(2, "0"))
+      .join("");
+    const guard =
+      "EXISTS(SELECT 1 FROM research_runs WHERE id=? AND owner=? AND lease=?)";
+    await this.db.batch([
+      ...snapshot.athletes.map((a) =>
+        this.statement(
+          `INSERT INTO athletes (id,owner,payload) SELECT ?,?,? WHERE ${guard} ON CONFLICT(id) DO UPDATE SET payload=excluded.payload`,
+          a.id,
+          this.owner,
+          json(a),
+          rid,
+          this.owner,
+          token,
+        ),
+      ),
+      ...snapshot.evidence.map((e) =>
+        this.statement(
+          `INSERT OR IGNORE INTO evidence (id,owner,athlete_id,status,payload) SELECT ?,?,?,?,? WHERE ${guard}`,
+          e.id,
+          this.owner,
+          e.athleteId,
+          e.status,
+          json(e),
+          rid,
+          this.owner,
+          token,
+        ),
+      ),
+      this.statement(
+        "UPDATE research_runs SET snapshot=?,input_hash=?,result=?,state=?,attempts=0,lease=NULL,lease_until=NULL WHERE id=? AND owner=? AND lease=?",
+        json(snapshot),
+        hash,
+        result ? json(result) : null,
+        result ? "awaiting_review" : "queued",
+        rid,
+        this.owner,
+        token,
+      ),
+    ]);
   }
   async getRun(rid: string): Promise<Run> {
     const r = await this.one("research_runs", rid),
@@ -576,6 +679,33 @@ export class Studio {
           : "",
         "## Selected athletes",
       ];
+    if (r.snapshot.research) {
+      lines.push(
+        `Public research refreshed: ${r.snapshot.research.refreshedAt}`,
+        ...r.snapshot.research.warnings.map((w) => `Coverage note: ${w}`),
+        "",
+        "## AI-recommended shortlist",
+        "Campaign-fit order is an AI interpretation, not a guarantee of suitability. Fees, availability, audience and restrictions remain unconfirmed.",
+      );
+      const recommendations = r.result
+        .filter((a) => a.recommendation)
+        .sort((a, b) => a.recommendation!.rank - b.recommendation!.rank);
+      if (!recommendations.length)
+        lines.push("Insufficient evidence for a differentiated shortlist.");
+      for (const a of recommendations) {
+        const rec = a.recommendation!;
+        lines.push(
+          `### ${rec.rank}. ${r.snapshot.athletes.find((p) => p.id === a.athleteId)!.name}`,
+          rec.rationale,
+          `Limitations: ${rec.caveats}`,
+          ...rec.evidenceIds.map((id) => {
+            const e = r.snapshot.evidence.find((e) => e.id === id)!;
+            return `- ${e.claim}\n  Source: ${e.sourceTitle} — ${e.sourceUrl} (retrieved ${e.collectedAt})`;
+          }),
+        );
+      }
+      lines.push("", "## Human selections");
+    }
     const kept = r.decisions.filter((d) => d.decision === "keep");
     if (!kept.length) lines.push("No athletes selected yet.");
     for (const d of kept) {

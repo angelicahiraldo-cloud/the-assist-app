@@ -1,6 +1,6 @@
 # The Assist
 
-A private athlete research application built from **The Assist — Technical Implementation Guide.md**.
+A Washington Mystics athlete research application built from **The Assist — Technical Implementation Guide.md**, with private, per-account records and a publicly shareable sign-in link.
 
 The app supports campaign briefs and revisions, a source-backed athlete library, evidence approval and corrections, campaign-specific research, side-by-side comparisons, saved decisions and notes, Markdown shortlist exports, and pilot evaluation records. Records persist in the server database, not browser local storage.
 
@@ -24,7 +24,7 @@ The portable Node runtime downloaded during the build is `/private/tmp/node-v24.
 1. Sign in and create a campaign, or start from the example brief.
 2. Set the product, objective, audience, formats, dates, budget, and essential/preferred requirements.
 3. Open **Research & sources** to add evidence, inspect it, and approve it. Draft, disputed, withdrawn, and stale evidence cannot support a new match.
-4. Build the research shortlist from the campaign card. A run retains its exact input snapshot.
+4. When AI is enabled, saving a brief automatically submits live research. Keep the research screen open while it refreshes official sources and builds a cited shortlist. A new research run refreshes sources again; earlier completed snapshots remain unchanged. Evidence matching remains a separate manual mode.
 5. Open requirement details and original sources. Select up to four athletes for comparison.
 6. Keep candidates, request more information, or pass. Save notes independently of the decision.
 7. Check each assessment before marking the research reviewed. Download the selected-athlete summary as Markdown.
@@ -32,7 +32,7 @@ The portable Node runtime downloaded during the build is `/private/tmp/node-v24.
 
 ## Dataset and honest uncertainty
 
-The initial library contains 12 entries from the [official Washington Mystics roster](https://mystics.wnba.com/roster), checked October 29, 2026. Developmental entries are excluded. This is a dated roster snapshot, not a continually refreshed feed. It does not imply athlete endorsement of this application.
+The initial library contains 12 entries from the [official Washington Mystics roster](https://mystics.wnba.com/roster), checked October 29, 2026. Every AI submission fetches the roster again and only includes players currently listed there; developmental entries are excluded. Previously saved or manually entered off-roster athletes cannot enter the AI shortlist. Library records are retained for historical runs. Listing does not imply athlete endorsement.
 
 Only roster facts are preloaded. No social metrics, audience demographics, sponsorship terms, prices, content experience, or availability are invented. The initial research will therefore contain meaningful unknowns until more sources are curated. Athlete initials are used instead of unlicensed photographs. No real athlete has fabricated demo attributes.
 
@@ -48,35 +48,37 @@ Evidence matching uses explicit categories and values. Examples:
 
 Different currencies are not converted automatically. Historical partnerships do not establish current exclusivity. Audience fit always requires human interpretation of an authorized report. Numerical fit scores are not used.
 
-## Optional AI mode
+## Live AI recommendations
 
-The application runs fully in **Evidence matching** mode without an AI account. An optional Anthropic adapter is implemented using the official SDK and structured output, with source-ID checks, protected commercial outcomes, request timeouts, and mandatory human review.
+The application uses Anthropic's official SDK, live web-search source discovery, direct public-page retrieval, and structured recommendations. It first refreshes the roster and accessible official player/news pages, then proposes up to five athletes ordered by campaign relevance. Fewer or no recommendations are valid when evidence is insufficient. Independent **Evidence matching** mode remains usable without an AI account.
 
 AI mode requires server-side configuration:
 
 ```dotenv
 ANTHROPIC_API_KEY=<your-provider-key>
-AI_MODEL=<a-supported-structured-output-model-id>
+AI_MODEL=claude-sonnet-4-6
 AI_ENABLED=true
 ```
 
 For local development, use an ignored `.dev.vars` file. For hosting, configure these through Sites environment-variable tools. Never put keys in source code, Git, client components, or the hosting manifest. The method selector appears only when all three settings are present. The key must be authorized for the selected model and billing.
 
-AI only proposes source-backed connections for content, activities, and historical partnerships. Budget, availability, restrictions, platform facts, and audience remain controlled by deterministic checks or explicit unknowns. Inputs sent to the provider omit commercial details and target-audience information. Model results are labeled interpretations and must be reviewed against their sources.
+The full campaign brief and fetched public athlete text are sent to Anthropic with the owner's authorization. Campaign budget, dates and audience are planning context, not established athlete facts. Recommendation reasons are AI interpretations and must be reviewed against cited sources. Fees, availability, demographic composition, engagement and current exclusivity are not inferred. Historical activities/partnerships are not represented as current obligations.
 
-**Live AI calls have not been verified because no provider credentials were supplied.** Provider-boundary checks are covered by deterministic tests. Consult the [official structured-output documentation](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) when choosing a model.
+Only HTTPS sources on `mystics.wnba.com`, `www.wnba.com`, and `wnba.com` are retrieved. Redirects are revalidated; login walls and failed article responses are not bypassed. Robots rules for the disclosed `TheAssistResearch` user agent are honored. Under RFC 9309, a 4xx robots response means unavailable rules; 429 and server/network failures fail closed. Each source quote must exactly occur on the retrieved page, whose text must identify the athlete, and the quote must include their surname. Invalid excerpts and recommendations are discarded with coverage notes, never silently accepted. These checks establish traceability, not perfect semantic accuracy.
+
+Live research uses at most four web searches and 20 profile/news URLs per run. Atomic database limits cap creation at five AI runs per account/hour, 100 site-wide/day and ten recent active runs. These are usage guardrails, not a dollar-denominated spend cap; configure billing limits in the provider account. The optional `scripts/check-live-research.ts` performs an explicitly billable integration check using the local key file without logging it. It is not part of automated tests or the browser bundle.
 
 ## Architecture
 
 - React and TypeScript, with Next.js-compatible routes through Vinext.
-- Sites private hosting and platform-owned ChatGPT authentication.
+- Sites hosting and platform-owned ChatGPT authentication; site audience remains publicly shareable, but API records require sign-in and ownership checks.
 - Cloudflare D1 / SQLite with Drizzle-managed schema migrations.
 - Authenticated server routes, workspace ownership checks on every private record, same-origin mutation checks, and no browser database credentials.
 - Durable research run records with leases, bounded recovery, immutable input snapshots, and idempotency keys.
 
-This deployment adapts the guide's proposed Supabase/PostgreSQL/Vercel infrastructure to the hosting already available. Each authenticated account has an isolated owner-managed workspace. The initial deployment is owner-private; it does not implement multi-member organization invitations or manager/viewer roles. Do not widen the Site audience assuming those role controls exist.
+This deployment adapts the guide's proposed Supabase/PostgreSQL/Vercel infrastructure to the hosting already available. Each authenticated account has an isolated owner-managed workspace. It does not implement shared organization records, member invitations or manager/viewer roles.
 
-Research executes in a bounded server request. If processing is interrupted, opening the run resumes queued/expired work through the same lease-protected processor. This is not an always-on background worker; closed-browser scheduled processing is not included. No claimed value depends on a live AI call completing in the background.
+Live research executes in two bounded, lease-protected stages: source refresh, then recommendation generation. If interrupted, opening the run resumes queued/expired work. Keep the research page open until completion. This is not an always-on background worker; closed-browser scheduled processing is not included. Each completed run retains its frozen excerpts, source URLs and collection timestamp, but full scraped articles are removed from the final snapshot.
 
 ## Verification
 
